@@ -1,0 +1,28 @@
+import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
+import { patchServer,patchClient } from './install.mjs';
+const base=new URL('.',import.meta.url);
+let source=await readFile(new URL('server-addon.mjs',base),'utf8');
+source=source.replace(/^import .*;\n/gm,'');
+const store=new Map(), documents=new Map();
+const preset={id:'p1',name:'RP'}, presetMessages=[{role:'system',content:'Write gently.'}];
+globalThis.__gfTest={getDB:async()=>({}),createPromptsStorage:()=>({list:async()=>[preset],getById:async id=>id==='p1'?preset:null,listSections:async()=>[],listGroups:async()=>[],listChoiceBlocksForPreset:async()=>[]}),assemblePrompt:async input=>{assert.equal(input.disableLorebooks,true);assert.deepEqual(input.chatMessages,[]);assert.equal(input.personaName,'민경');return{messages:presetMessages};}};
+source='const {getDB,createPromptsStorage,assemblePrompt}=globalThis.__gfTest;\n'+source;
+const {setupPresets}=await import('data:text/javascript;base64,'+Buffer.from(source).toString('base64'));
+const runtime={persistence:{documents:{getById:async(_,id)=>documents.get(id),create:async doc=>{documents.set(doc.id,{...doc,revision:1});return doc;},update:async doc=>{documents.set(doc.id,{...doc,revision:2});return doc;}}}};
+const routes={get:(p,h)=>store.set('GET '+p,h),post:(p,h)=>store.set('POST '+p,h)};
+const apply=await setupPresets(routes,runtime,{id:'gacha-forge'},async id=>id==='world'?{}:null);
+const original=[{role:'system',content:'Output exactly the game schema.'},{role:'user',content:'Continue.'}];
+assert.equal(await apply('world',{},'chat',original),original);
+let status=200;const reply={code(n){status=n;return this;},send(x){return x;}};
+assert.equal((await store.get('POST /rp-presets')({body:{runId:'world',presetId:'p1',narration:true,chat:true}},reply)).ok,true);
+const result=await apply('world',{protagonist:{name:'민경'}},'chat',original);
+assert.deepEqual(result.slice(-2),original);assert.equal(result[0].content,'Write gently.');
+assert.equal(await apply('world',{},'structured',original),original);
+await store.get('POST /rp-presets')({body:{runId:'world',presetId:'missing'}},reply);assert.equal(status,400);
+await assert.rejects(()=>store.get('GET /rp-presets')({query:{runId:'missing'}}));
+const fixture=process.argv[2];
+if(fixture){const server=await readFile(fixture+'/server.mjs','utf8'),client=await readFile(fixture+'/client.js','utf8');assert.ok(patchServer(server).includes('gfApplyRpPresets(t,n,r,a)'));assert.ok(patchClient(client,await readFile(new URL('client-addon.js',base),'utf8')).includes('RP 프리셋 연결'));}
+assert.throws(()=>patchServer('unsupported bundle'));
+console.info('PASS: saved selection, isolated assembly, structured-job exclusion, invalid preset/run, exact bundle anchors.');
+delete globalThis.__gfTest;
